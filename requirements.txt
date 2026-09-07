@@ -1,0 +1,5 @@
+pytesseract~=0.3.13
+pillow~=11.3.0
+python-dotenv~=1.2.3
+python-telegram-bot~=22.8
+httpx~=0.28.1
