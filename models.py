@@ -55,6 +55,7 @@ class TelegramPost:
     @classmethod
     def from_schedule(cls, schedule: Schedule):
         branch_name = 'Татищева' if schedule.branch == Branch.TATISHEVA else 'Крупской'
+        hashtag = '#татищева' if schedule.branch == Branch.TATISHEVA else '#крупской'
 
         # parse actual date
         print("PARSING, POST TEXT:", schedule.caption)
@@ -66,6 +67,6 @@ class TelegramPost:
             schedule_date = schedule.date + timedelta(days=1)
             print("schedule_date:", schedule_date)
 
-        caption = f"{schedule_date.strftime('%e.%m')} – {branch_name}"
+        caption = f"{schedule_date.strftime('%e.%m')} – {branch_name}\n{hashtag}"
 
         return cls(caption)
