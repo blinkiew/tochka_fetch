@@ -1,0 +1,16 @@
+services:
+  fetch-service:
+    build: .
+    image: tochka-fetch:1.1
+    volumes:
+      - tochka_fetch_data_vol:/data
+    environment:
+      - VK_TOKEN=${VK_TOKEN}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - BOT_TOKEN=${BOT_TOKEN}
+      - VK_DOMAIN=${VK_DOMAIN}
+      - CHANNEL_ID=${CHANNEL_ID}
+      - DATES_PATH=/data/dates.json
+volumes:
+  tochka_fetch_data_vol:
+

@@ -1,170 +1,150 @@
 import asyncio
 import json
 import os.path
-import time
 
 import httpx
-import img_ocr
-
 from dotenv import load_dotenv
-from io import BytesIO
 from os import getenv
-from PIL import Image
 
-from channel_bot import TelegramBot
-from models import Branch, Schedule, TelegramPost
+from api.gemini_api import GeminiAPI, GeminiResponseError
+from api.tg_api import TelegramAPI
+from api.vk_api import VKApi
+from models import Post, Schedule
 
 load_dotenv()
 
-TOKEN = getenv("VK_TOKEN")
-DOMAIN = int(getenv("DOMAIN") or 0)
-API_VERSION = "5.131"
-
-dates_path = 'dates.json'
-latest_dates = {}
-
-bot = TelegramBot()
+VK_TOKEN = getenv("VK_TOKEN")
+VK_DOMAIN = getenv("VK_DOMAIN") or getenv("DOMAIN")
+TG_TOKEN = getenv("BOT_TOKEN")
+CHANNEL_ID = getenv("CHANNEL_ID")
+GEMINI_API_KEY = getenv("GEMINI_API_KEY") or getenv("GOOGLE_API_KEY")
+DATES_PATH = getenv("DATES_PATH", "dates.json")
 
 
-def fetch_raw_posts(count: int = 5) -> list | None:
-    url = "https://api.vk.com/method/wall.get"
-    params = {
-        "access_token": TOKEN,
-        "v": API_VERSION,
-        "domain": DOMAIN,
-        "count": count
-    }
-
-    try:
-        response = httpx.get(url, params=params).json()
-
-        if "error" in response:
-            print(f"VK API Error: {response['error']['error_msg']}")
-            return None
-
-        posts: list = response["response"]["items"]
-        return posts
-
-    except Exception as e:
-        print(f"Request error: {e}")
-
-
-def fetch_schedules(raw_posts) -> list[Schedule] | None:
-    if not raw_posts:
-        return None
-
-    schedules = []
-    for raw_post in raw_posts:
+def collect_attachments(schedule: Schedule) -> list[bytes]:
+    attachments = []
+    for url in schedule.attachment_urls:
         try:
-            schedules.append(Schedule.from_json(raw_post))
-        except ValueError:
+            response = httpx.get(url, timeout=30)
+            response.raise_for_status()
+            attachments.append(response.content)
+        except httpx.RequestError as e:
+            print(f"Skipping attachment, branch: {schedule.branch}, url: {url}; Error: {e}")
+            continue
+        except httpx.HTTPStatusError as e:
+            print(f"Skipping schedule, branch: {schedule.branch}, url: {url}; Error: {e}")
             continue
 
-    return schedules
-
-
-def check_new(schedules: list[Schedule]) -> list[Schedule]:
-    global latest_dates
-    new_schedules = []
-
-    for schedule in schedules:
-        latest_date = latest_dates.get(str(schedule.branch.value))
-        if latest_date and schedule.date.timestamp() <= latest_date:
-            continue
-
-        # find target attachment
-        found_target = False
-        for url in schedule.attachment_urls:
-            try:
-                # download image
-                response = httpx.get(url)
-                response.raise_for_status()
-
-                image_bytes = BytesIO(response.content)
-                img = Image.open(image_bytes)
-
-                # ocr image
-                img_text = img_ocr.ocr(img)
-                is_valid = img_ocr.is_target(img_text, schedule.branch)
-                if not is_valid:
-                    continue
-
-                # save image
-                img.save(f"{schedule.branch.value}.png")
-
-                latest_dates[str(schedule.branch.value)] = schedule.date.timestamp()
-                save_dates()
-
-                new_schedules.append(schedule)
-                found_target = True
-
-            except KeyError, httpx.HTTPStatusError, httpx.ConnectTimeout:
-                continue
-
-        if not found_target:
-            # TODO: send me an update that post is found but attachment is not recognized
-            print(f"Target post attachment is not recognized. Caption: {schedule.caption}, Branch: {schedule.branch}")
-
-    save_dates()
-    return new_schedules
+    return attachments
 
 
 def load_dates():
-    global latest_dates
-    if not os.path.exists(dates_path):
-        with open(dates_path, 'w') as file:
-            file.write('{}')
-            file.close()
-        latest_dates = {}
-        return
+    if not os.path.exists(DATES_PATH):
+        with open(DATES_PATH, "w", encoding="utf-8") as file:
+            json.dump({}, file)
+        return {}
 
-    with open(dates_path, encoding="utf-8") as file:
-        latest_dates = json.load(file)
+    with open(DATES_PATH, encoding="utf-8") as file:
+        dates = json.load(file)
+    if not isinstance(dates, dict):
+        raise ValueError(f"{DATES_PATH} must contain a JSON object.")
+    return dates
 
-def save_dates():
-    with open(dates_path, 'w', encoding="utf-8") as file:
-        json.dump(latest_dates, file)
+
+def save_dates(dates: dict):
+    with open(DATES_PATH, "w", encoding="utf-8") as file:
+        json.dump(dates, file)
 
 
 SLEEP = 90  # 1.5 mins
 
+
 async def main():
-    load_dates()
+    required_variables = {
+        "VK_TOKEN": VK_TOKEN,
+        "VK_DOMAIN": VK_DOMAIN,
+        "BOT_TOKEN": TG_TOKEN,
+        "CHANNEL_ID": CHANNEL_ID,
+        "GEMINI_API_KEY (or GOOGLE_API_KEY)": GEMINI_API_KEY,
+    }
+    missing_variables = [name for name, value in required_variables.items() if not value]
+    if missing_variables:
+        raise RuntimeError(f"Missing required environment variables: {', '.join(missing_variables)}")
+
+    try:
+        domain = int(VK_DOMAIN)
+    except ValueError as error:
+        raise ValueError("VK_DOMAIN must be an integer community ID, usually negative.") from error
+
+    latest_dates = load_dates()
+
+    vk_api = VKApi(VK_TOKEN, domain)
+    gemini_api = GeminiAPI()
+    tg_api = TelegramAPI(TG_TOKEN, CHANNEL_ID)
 
     while True:
-        await check_posts()
-        print(f"Waiting {SLEEP} seconds for the next check.")
-        time.sleep(SLEEP)
+        print("Checking for new posts...")
+        await check_posts(latest_dates, vk_api, gemini_api, tg_api)
+        print(f"Waiting for {SLEEP} seconds before the next check.")
+        await asyncio.sleep(SLEEP)
 
 
-async def check_posts():
-    # fetch raw posts using vk api
-    posts_raw = fetch_raw_posts()
-    if not posts_raw:
-        print("No posts fetched. Unexpected.")
-        return
-
-    schedules = fetch_schedules(posts_raw)
+async def check_posts(
+    latest_dates: dict,
+    vk_api: VKApi,
+    gemini_api: GeminiAPI,
+    tg_api: TelegramAPI,
+):
+    schedules = vk_api.fetch_schedules()
     if not schedules:
         print("No schedules parsed.")
         return
 
-    # process raw posts and check for new schedule
-    new_schedules = check_new(schedules)
+    # check for new schedules
+    new_schedules = []
+    for schedule in schedules:
+        latest_date = latest_dates.get(str(schedule.branch.value), 0)
+        if schedule.date.timestamp() <= latest_date:
+            continue
+
+        print(f"Found schedule, branch: {schedule.branch}, date: {schedule.date.strftime('%Y-%m-%d')}")
+        new_schedules.append(schedule)
+
     if not new_schedules:
-        print(f"No new posts.")
+        print("No new posts.")
         return
 
-    # post new schedule(s) to telegram
     for schedule in new_schedules:
-        post = TelegramPost.from_schedule(schedule)
+        attachments = collect_attachments(schedule)
+        if not attachments:
+            print(f"No attachments could be downloaded. Branch: {schedule.branch}")
+            continue
 
-        await bot.send_schedule(
-            f"{schedule.branch.value}.png",
-            post
-        )
+        try:
+            match = gemini_api.find_target_schedule(attachments)
+        except GeminiResponseError as error:
+            print(f"Could not identify schedule image for branch {schedule.branch}: {error}")
+            continue
+        print(f"Gemini found match: attachment with index {match.target_image_index} for branch {schedule.branch},"
+              f"date: {schedule.date.strftime('%Y-%m-%d')}")
 
+        if not 0 <= match.target_image_index < len(attachments):
+            raise ValueError(
+                f"Gemini returned invalid image index {match.target_image_index} "
+                f"for {len(attachments)} attachments."
+            )
+
+        attachment = attachments[match.target_image_index]
+        post = Post.from_schedule(schedule, attachment)
+        await tg_api.send_schedule(post)
         print(f"Schedule sent successfully. Branch: {schedule.branch}")
+
+        branch_key = str(schedule.branch.value)
+        latest_dates[branch_key] = max(
+            schedule.date.timestamp(),
+            latest_dates.get(branch_key, 0),
+        )
+        save_dates(latest_dates)
 
 
 if __name__ == '__main__':

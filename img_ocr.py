@@ -22,5 +22,5 @@ def is_target(text: str, branch: Branch):
 
 
 if __name__ == '__main__':
-    parsed = pytesseract.image_to_string(Image.open('test.jpg'), lang='rus')
+    parsed = pytesseract.image_to_string(Image.open('test/test3.jpg'), lang='rus')
     print(is_target(parsed, Branch.TATISHEVA))

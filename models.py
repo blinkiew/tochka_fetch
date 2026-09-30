@@ -1,3 +1,4 @@
+import keyword
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
@@ -15,17 +16,17 @@ class Schedule:
     attachment_urls: list[str]
 
     @classmethod
-    def from_json(cls, post_json) -> Schedule:
+    def from_json(cls, post_json) -> 'Schedule':
         date = datetime.fromtimestamp(post_json.get('date'))
 
-        # find post branch
+        # detect post branch
         text: str = post_json.get('text')
         if not text:
             raise ValueError("Post doesn't have a caption.")
 
         if 'татищева' in text.lower():
             branch = Branch.TATISHEVA
-        elif 'крупской' in text.lower():
+        elif any(match in text.lower() for match in ['крупской', 'крупская']):
             branch = Branch.KRUPSKOY
         else:
             raise ValueError(f"Couldn't determine post's branch from caption: {text}.")
@@ -49,24 +50,19 @@ class Schedule:
         )
 
 @dataclass
-class TelegramPost:
+class Post:
     caption: str
+    photo: bytes
 
     @classmethod
-    def from_schedule(cls, schedule: Schedule):
+    def from_schedule(cls, schedule: Schedule, photo_bytes: bytes):
         branch_name = 'Татищева' if schedule.branch == Branch.TATISHEVA else 'Крупской'
         hashtag = '#татищева' if schedule.branch == Branch.TATISHEVA else '#крупской'
 
-        # parse actual date
-        print("PARSING, POST TEXT:", schedule.caption)
         try:
-            schedule_date = datetime.strptime(schedule.caption.split()[0], '%e.%m')
+            schedule_date = datetime.strptime(schedule.caption.split()[0], '%d.%m')
         except ValueError:
-            # set as tomorrow
-            print("SETTING AS TOMORROW, POST PUBLISH DATE:", schedule.date)
             schedule_date = schedule.date + timedelta(days=1)
-            print("schedule_date:", schedule_date)
 
-        caption = f"{schedule_date.strftime('%e.%m')} – {branch_name}\n{hashtag}"
-
-        return cls(caption)
+        caption = f"{schedule_date.strftime('%d.%m')} – {branch_name}\n{hashtag}"
+        return cls(caption, photo_bytes)
