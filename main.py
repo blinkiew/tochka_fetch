@@ -39,6 +39,10 @@ def collect_attachments(schedule: Schedule) -> list[bytes]:
 
 
 def load_dates():
+    data_dir = os.path.dirname(DATES_PATH)
+    if data_dir:
+        os.makedirs(data_dir, exist_ok=True)
+
     if not os.path.exists(DATES_PATH):
         with open(DATES_PATH, "w", encoding="utf-8") as file:
             json.dump({}, file)
@@ -52,6 +56,10 @@ def load_dates():
 
 
 def save_dates(dates: dict):
+    data_dir = os.path.dirname(DATES_PATH)
+    if data_dir:
+        os.makedirs(data_dir, exist_ok=True)
+
     with open(DATES_PATH, "w", encoding="utf-8") as file:
         json.dump(dates, file)
 
@@ -103,7 +111,9 @@ async def check_posts(
     # check for new schedules
     new_schedules = []
     for schedule in schedules:
-        latest_date = latest_dates.get(str(schedule.branch.value), 0)
+        branch_key = str(schedule.branch.value)
+        latest_date = latest_dates.get(branch_key, 0)
+
         if schedule.date.timestamp() <= latest_date:
             continue
 

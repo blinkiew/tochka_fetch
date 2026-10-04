@@ -2,6 +2,7 @@ services:
   fetch-service:
     build: .
     image: tochka-fetch:1.1
+    restart: unless-stopped
     volumes:
       - tochka_fetch_data_vol:/data
     environment:
